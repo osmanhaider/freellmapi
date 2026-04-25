@@ -159,7 +159,13 @@ function isRetryableError(err: any): boolean {
     || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
     || msg.includes('econnrefused') || msg.includes('econnreset')
     || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error');
+    || msg.includes('500') || msg.includes('internal server error')
+    // 404 from a provider usually means the model id was deprecated or
+    // renamed (Cerebras and OpenRouter rotate models often). Treat it as
+    // retryable so the router falls over to the next entry in the chain
+    // instead of bubbling a fatal error to the client.
+    || msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')
+    || msg.includes('model not found') || msg.includes('model_not_found');
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
