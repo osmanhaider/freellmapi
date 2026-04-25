@@ -164,8 +164,34 @@ function isRetryableError(err: any): boolean {
     // renamed (Cerebras and OpenRouter rotate models often). Treat it as
     // retryable so the router falls over to the next entry in the chain
     // instead of bubbling a fatal error to the client.
-    || msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')
-    || msg.includes('model not found') || msg.includes('model_not_found');
+    || isModelDeprecatedError(err);
+}
+
+function isModelDeprecatedError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  // Distinguish "this model id is gone" from generic 4xx so we can
+  // permanently disable the model rather than just cooldown.
+  return msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')
+    || msg.includes('model_not_found') || msg.includes('model not found')
+    || msg.includes('deprecated');
+}
+
+/**
+ * Flip `enabled = 0` on a model row so it stays out of every future routing
+ * decision until a human re-enables it from the dashboard. Used when a
+ * provider tells us a model id no longer exists — there's no point retrying
+ * on a 2-minute cooldown.
+ */
+function disableDeprecatedModel(modelDbId: number, displayName: string, reason: string): void {
+  try {
+    const db = getDb();
+    db.prepare('UPDATE models SET enabled = 0 WHERE id = ?').run(modelDbId);
+    console.warn(
+      `[Proxy] Auto-disabled model "${displayName}" (id=${modelDbId}) — ${reason}. Re-enable from the dashboard if the provider brings it back.`,
+    );
+  } catch (e) {
+    console.error('[Proxy] Failed to auto-disable deprecated model:', e);
+  }
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
@@ -323,6 +349,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         setCooldown(route.platform, route.modelId, route.keyId, 120_000);
         recordRateLimitHit(route.modelDbId);
         lastError = err;
+        // Permanently disable models that the provider no longer recognises
+        // — a 2-minute cooldown won't bring them back.
+        if (isModelDeprecatedError(err)) {
+          disableDeprecatedModel(route.modelDbId, route.displayName, err.message?.slice(0, 80) ?? 'provider 404');
+        }
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
       }
