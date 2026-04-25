@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initEncryptionKey } from '../lib/crypto.js';
+import { encrypt, initEncryptionKey } from '../lib/crypto.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.resolve(__dirname, '../../data/freeapi.db');
@@ -41,9 +41,57 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV4(db);
   migrateModelsV5(db);
   ensureUnifiedKey(db);
+  seedKeysFromEnv(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
   return db;
+}
+
+// Provider keys can be re-seeded from environment variables on every boot.
+// Useful on hosts with ephemeral disks (e.g. Render free tier) where the
+// SQLite file is wiped on each redeploy. Set <PLATFORM>_API_KEY env vars
+// (matching the names below) and FreeLLMAPI will recreate the encrypted
+// rows automatically. Keys you add manually via the dashboard use a
+// different label and survive untouched alongside these.
+const ENV_KEY_MAP: Record<string, string> = {
+  GOOGLE_API_KEY: 'google',
+  GROQ_API_KEY: 'groq',
+  CEREBRAS_API_KEY: 'cerebras',
+  SAMBANOVA_API_KEY: 'sambanova',
+  NVIDIA_API_KEY: 'nvidia',
+  MISTRAL_API_KEY: 'mistral',
+  OPENROUTER_API_KEY: 'openrouter',
+  GITHUB_API_KEY: 'github',
+  HUGGINGFACE_API_KEY: 'huggingface',
+  COHERE_API_KEY: 'cohere',
+  CLOUDFLARE_API_KEY: 'cloudflare',
+};
+
+const ENV_SEED_LABEL = '(from env)';
+
+function seedKeysFromEnv(db: Database.Database): void {
+  const deleteStmt = db.prepare(
+    'DELETE FROM api_keys WHERE platform = ? AND label = ?',
+  );
+  const insertStmt = db.prepare(`
+    INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+    VALUES (?, ?, ?, ?, ?, 'unknown', 1)
+  `);
+
+  let seeded = 0;
+  for (const [envName, platform] of Object.entries(ENV_KEY_MAP)) {
+    const value = process.env[envName]?.trim();
+    if (!value) continue;
+    const { encrypted, iv, authTag } = encrypt(value);
+    // Replace any existing env-managed row so the current env state wins.
+    // Manually-added rows have a different label and are not touched.
+    deleteStmt.run(platform, ENV_SEED_LABEL);
+    insertStmt.run(platform, ENV_SEED_LABEL, encrypted, iv, authTag);
+    seeded++;
+  }
+  if (seeded > 0) {
+    console.log(`Seeded ${seeded} provider key${seeded === 1 ? '' : 's'} from env`);
+  }
 }
 
 function createTables(db: Database.Database) {
