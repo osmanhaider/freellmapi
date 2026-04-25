@@ -11,6 +11,7 @@ import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { adminAuth } from './middleware/adminAuth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +21,10 @@ export function createApp() {
   app.use(helmet({ contentSecurityPolicy: false, hsts: false }));
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
+
+  // Gate the admin dashboard + /api/* admin routes behind HTTP Basic Auth
+  // when ADMIN_USER and ADMIN_PASSWORD are set. /v1/* and /api/ping bypass.
+  app.use(adminAuth);
 
   // API routes
   app.use('/api/keys', keysRouter);
